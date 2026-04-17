@@ -1,5 +1,6 @@
 import os
 import requests
+import asyncio
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,8 +13,8 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
-GROQ_API_KEY = "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"
+TOKEN = "PASTE_YOUR_TELEGRAM_TOKEN"
+GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY"
 PASSCODE = "67stien67"
 
 BASE_URL = "https://telegram-ai-bot-3370.onrender.com"
@@ -30,22 +31,21 @@ MODELS = [
 logged_users = set()
 user_model = {}
 user_memory = {}
-pending_model_confirm = {}
 
 MAX_MEMORY = 12
 
-# ================= FLASK =================
+# ================= APP =================
 app_web = Flask(__name__)
-
-# ================= TELEGRAM APP =================
 tg_app = Application.builder().token(TOKEN).build()
 
 
-# ================= HELPERS =================
-def is_logged(uid):
-    return uid in logged_users
+# ================= ROOT =================
+@app_web.get("/")
+def home():
+    return "Bot running", 200
 
 
+# ================= MENUS =================
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔑 Login", callback_data="login")],
@@ -53,43 +53,21 @@ def main_menu():
     ])
 
 
-def back_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅ Back", callback_data="back")]
-    ])
-
-
 def model_menu():
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton(m, callback_data=f"pick:{m}")] for m in MODELS]
-        + [[InlineKeyboardButton("⬅ Back", callback_data="back")]]
     )
-
-
-def confirm_menu(model):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirm", callback_data=f"confirm:{model}"),
-            InlineKeyboardButton("❌ Cancel", callback_data="models")
-        ]
-    ])
-
-
-# ================= ROOT ROUTE (FIX "NOT FOUND") =================
-@app_web.get("/")
-def home():
-    return "🤖 Telegram AI Bot is running", 200
 
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 AI BOT READY\n\n🔒 Login required",
+        "🤖 AI BOT READY\n🔒 Login required",
         reply_markup=main_menu()
     )
 
 
-# ================= CALLBACKS =================
+# ================= CALLBACK =================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -97,85 +75,44 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     data = q.data
 
-    # BACK
-    if data == "back":
-        await q.edit_message_text("🏠 Main Menu", reply_markup=main_menu())
-        return
-
-    # LOGIN
     if data == "login":
-        if is_logged(uid):
-            await q.edit_message_text("✅ Already logged in", reply_markup=main_menu())
-            return
-
         await q.edit_message_text("🔑 Send passcode:")
         return
 
-    # MODELS MENU
     if data == "models":
-        if not is_logged(uid):
-            await q.edit_message_text("🔒 Login first", reply_markup=back_menu())
-            return
-
         await q.edit_message_text("🧠 Choose model:", reply_markup=model_menu())
         return
 
-    # PICK MODEL
     if data.startswith("pick:"):
-        model = data.split(":", 1)[1]
-        pending_model_confirm[uid] = model
-
-        await q.edit_message_text(
-            f"⚠️ Confirm model:\n\n{model}",
-            reply_markup=confirm_menu(model)
-        )
-        return
-
-    # CONFIRM MODEL
-    if data.startswith("confirm:"):
-        model = data.split(":", 1)[1]
+        model = data.split(":")[1]
         user_model[uid] = model
-        pending_model_confirm.pop(uid, None)
-
-        await q.edit_message_text(
-            f"✅ Model set:\n{model}",
-            reply_markup=main_menu()
-        )
-        return
+        await q.edit_message_text(f"✅ Model set:\n{model}", reply_markup=main_menu())
 
 
-# ================= MESSAGE HANDLER =================
+# ================= MESSAGE =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    text = update.message.text.strip()
+    text = update.message.text
 
-    # LOGIN REQUIRED ALWAYS
-    if not is_logged(uid):
+    # LOGIN CHECK
+    if uid not in logged_users:
         if text == PASSCODE:
             logged_users.add(uid)
             user_model[uid] = MODELS[0]
             user_memory[uid] = []
-
-            await update.message.reply_text(
-                "✅ Logged in!",
-                reply_markup=main_menu()
-            )
+            await update.message.reply_text("✅ Logged in!", reply_markup=main_menu())
         else:
             await update.message.reply_text("🔒 Wrong passcode")
         return
 
-    # MEMORY INIT
-    if uid not in user_memory:
-        user_memory[uid] = []
-
+    # MEMORY
+    user_memory.setdefault(uid, [])
     user_memory[uid].append({"role": "user", "content": text})
-
-    if len(user_memory[uid]) > MAX_MEMORY:
-        user_memory[uid] = user_memory[uid][-MAX_MEMORY:]
+    user_memory[uid] = user_memory[uid][-MAX_MEMORY:]
 
     model = user_model.get(uid, MODELS[0])
 
-    # GROQ REQUEST
+    # GROQ CALL
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -193,36 +130,41 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = r.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
-        reply = f"⚠️ Error: {e}"
+        reply = f"Error: {e}"
 
     user_memory[uid].append({"role": "assistant", "content": reply})
 
-    await update.message.reply_text(reply, reply_markup=main_menu())
+    await update.message.reply_text(reply)
 
 
-# ================= WEBHOOK ENDPOINT =================
+# ================= WEBHOOK =================
 @app_web.post("/webhook")
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, tg_app.bot)
 
-    tg_app.create_task(tg_app.process_update(update))
+    asyncio.run(tg_app.process_update(update))
     return "ok"
 
 
-# ================= REGISTER HANDLERS =================
-tg_app.add_handler(CommandHandler("start", start))
-tg_app.add_handler(CallbackQueryHandler(callback))
-tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+# ================= RUN =================
+async def setup_webhook():
+    await tg_app.bot.set_webhook(f"{BASE_URL}/webhook")
 
 
-# ================= START SERVER =================
-if __name__ == "__main__":
+def main():
+    tg_app.add_handler(CommandHandler("start", start))
+    tg_app.add_handler(CallbackQueryHandler(callback))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+    # FIX: correct async webhook setup
+    asyncio.run(setup_webhook())
+
+    print("🚀 Bot running FIXED")
+
     port = int(os.environ.get("PORT", 10000))
-
-    print("🚀 Bot running (FINAL FIXED VERSION)")
-
-    # IMPORTANT: correct webhook
-    tg_app.bot.set_webhook(url=f"{BASE_URL}/webhook")
-
     app_web.run(host="0.0.0.0", port=port)
+
+
+if __name__ == "__main__":
+    main()
