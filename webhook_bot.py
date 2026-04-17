@@ -16,6 +16,8 @@ TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
 GROQ_API_KEY = "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"
 PASSCODE = "67stien67"
 
+BASE_URL = "https://telegram-ai-bot-3370.onrender.com"
+
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -35,6 +37,7 @@ MAX_MEMORY = 12
 # ================= FLASK =================
 app_web = Flask(__name__)
 
+# ================= TELEGRAM APP =================
 tg_app = Application.builder().token(TOKEN).build()
 
 
@@ -70,6 +73,12 @@ def confirm_menu(model):
             InlineKeyboardButton("❌ Cancel", callback_data="models")
         ]
     ])
+
+
+# ================= ROOT ROUTE (FIX "NOT FOUND") =================
+@app_web.get("/")
+def home():
+    return "🤖 Telegram AI Bot is running", 200
 
 
 # ================= START =================
@@ -140,7 +149,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
 
-    # LOGIN REQUIRED FOR EVERYTHING
+    # LOGIN REQUIRED ALWAYS
     if not is_logged(uid):
         if text == PASSCODE:
             logged_users.add(uid)
@@ -166,7 +175,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     model = user_model.get(uid, MODELS[0])
 
-    # GROQ API CALL
+    # GROQ REQUEST
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -191,7 +200,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, reply_markup=main_menu())
 
 
-# ================= WEBHOOK ROUTE =================
+# ================= WEBHOOK ENDPOINT =================
 @app_web.post("/webhook")
 def webhook():
     data = request.get_json(force=True)
@@ -211,10 +220,9 @@ tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
 
-    print("🚀 Bot running (FIXED VERSION)")
+    print("🚀 Bot running (FINAL FIXED VERSION)")
 
-    tg_app.bot.set_webhook(
-        url="https://telegram-ai-bot-3370.onrender.com/webhook"
-    )
+    # IMPORTANT: correct webhook
+    tg_app.bot.set_webhook(url=f"{BASE_URL}/webhook")
 
     app_web.run(host="0.0.0.0", port=port)
