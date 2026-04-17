@@ -13,7 +13,7 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "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"
 PASSCODE = "67stien67"
 
 MODELS = [
@@ -57,9 +57,10 @@ def back_menu():
 
 
 def model_menu():
-    buttons = [[InlineKeyboardButton(m, callback_data=f"pick:{m}")] for m in MODELS]
-    buttons.append([InlineKeyboardButton("⬅ Back", callback_data="back")])
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(m, callback_data=f"pick:{m}")] for m in MODELS]
+        + [[InlineKeyboardButton("⬅ Back", callback_data="back")]]
+    )
 
 
 def confirm_menu(model):
@@ -73,68 +74,62 @@ def confirm_menu(model):
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
     await update.message.reply_text(
-        "🤖 AI BOT READY\n\n🔒 Login required to continue",
+        "🤖 AI BOT READY\n\n🔒 Login required",
         reply_markup=main_menu()
     )
 
 
 # ================= CALLBACKS =================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    uid = query.from_user.id
-    data = query.data
+    uid = q.from_user.id
+    data = q.data
 
-    # ---------------- BACK ----------------
+    # BACK
     if data == "back":
-        await query.edit_message_text("🏠 Main Menu", reply_markup=main_menu())
+        await q.edit_message_text("🏠 Main Menu", reply_markup=main_menu())
         return
 
-    # ---------------- LOGIN ----------------
+    # LOGIN
     if data == "login":
         if is_logged(uid):
-            await query.edit_message_text(
-                "✅ You are already logged in.",
-                reply_markup=main_menu()
-            )
+            await q.edit_message_text("✅ Already logged in", reply_markup=main_menu())
             return
 
-        await query.edit_message_text("🔑 Send passcode now:")
+        await q.edit_message_text("🔑 Send passcode:")
         return
 
-    # ---------------- MODEL MENU ----------------
+    # MODELS MENU
     if data == "models":
         if not is_logged(uid):
-            await query.edit_message_text("🔒 Login first", reply_markup=back_menu())
+            await q.edit_message_text("🔒 Login first", reply_markup=back_menu())
             return
 
-        await query.edit_message_text("🧠 Choose model:", reply_markup=model_menu())
+        await q.edit_message_text("🧠 Choose model:", reply_markup=model_menu())
         return
 
-    # ---------------- PICK MODEL ----------------
+    # PICK MODEL
     if data.startswith("pick:"):
         model = data.split(":", 1)[1]
         pending_model_confirm[uid] = model
 
-        await query.edit_message_text(
+        await q.edit_message_text(
             f"⚠️ Confirm model:\n\n{model}",
             reply_markup=confirm_menu(model)
         )
         return
 
-    # ---------------- CONFIRM MODEL ----------------
+    # CONFIRM MODEL
     if data.startswith("confirm:"):
         model = data.split(":", 1)[1]
-
         user_model[uid] = model
         pending_model_confirm.pop(uid, None)
 
-        await query.edit_message_text(
-            f"✅ Model selected:\n{model}",
+        await q.edit_message_text(
+            f"✅ Model set:\n{model}",
             reply_markup=main_menu()
         )
         return
@@ -145,7 +140,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
 
-    # 🔒 LOGIN SYSTEM (NO SPAM FIX)
+    # LOGIN REQUIRED FOR EVERYTHING
     if not is_logged(uid):
         if text == PASSCODE:
             logged_users.add(uid)
@@ -153,14 +148,14 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_memory[uid] = []
 
             await update.message.reply_text(
-                "✅ Logged in successfully!",
+                "✅ Logged in!",
                 reply_markup=main_menu()
             )
         else:
             await update.message.reply_text("🔒 Wrong passcode")
         return
 
-    # ---------------- MEMORY INIT ----------------
+    # MEMORY INIT
     if uid not in user_memory:
         user_memory[uid] = []
 
@@ -171,7 +166,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     model = user_model.get(uid, MODELS[0])
 
-    # ---------------- GROQ CALL ----------------
+    # GROQ API CALL
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -196,11 +191,13 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, reply_markup=main_menu())
 
 
-# ================= WEBHOOK =================
-@app_web.post(f"/{TOKEN}")
+# ================= WEBHOOK ROUTE =================
+@app_web.post("/webhook")
 def webhook():
-    update = Update.de_json(request.get_json(force=True), tg_app.bot)
-    tg_app.process_update(update)
+    data = request.get_json(force=True)
+    update = Update.de_json(data, tg_app.bot)
+
+    tg_app.create_task(tg_app.process_update(update))
     return "ok"
 
 
@@ -210,14 +207,14 @@ tg_app.add_handler(CallbackQueryHandler(callback))
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 
-# ================= RUN =================
+# ================= START SERVER =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
 
-    print("🚀 Bot running (final version)")
+    print("🚀 Bot running (FIXED VERSION)")
 
     tg_app.bot.set_webhook(
-        url=f"https://telegram-ai-bot-3370.onrender.com/{TOKEN}"
+        url="https://telegram-ai-bot-3370.onrender.com/webhook"
     )
 
     app_web.run(host="0.0.0.0", port=port)
