@@ -1,3 +1,4 @@
+import asyncio
 import requests
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -146,8 +147,14 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     print("🚀 Bot running with memory...")
-    app.run_polling()
 
+    # 🔥 FIX FOR PYTHON 3.14 + RENDER
+    async def run():
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
 
-if __name__ == "__main__":
-    main()
+        # keep alive forever
+        await asyncio.Event().wait()
+
+    asyncio.run(run())
