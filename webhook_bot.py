@@ -138,6 +138,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- MAIN ----------------
 
+import asyncio
+
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -146,15 +148,18 @@ def main():
     app.add_handler(CommandHandler("models", models))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("🚀 Bot running with memory...")
+    print("🚀 Bot running (Render-safe mode)...")
 
-    # 🔥 FIX FOR PYTHON 3.14 + RENDER
     async def run():
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
 
-        # keep alive forever
+        # keep alive forever (Render-friendly)
         await asyncio.Event().wait()
 
     asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()
