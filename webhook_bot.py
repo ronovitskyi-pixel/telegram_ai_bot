@@ -2,8 +2,9 @@ import os
 import sys
 import logging
 import traceback
+from typing import Dict
 
-# 🔧 Fix for Render's asyncio conflict – apply BEFORE any other imports
+# Required for Render's environment
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -19,9 +20,21 @@ from telegram.ext import (
 )
 from groq import Groq
 
+# --- Webhook related imports ---
+from starlette.applications import Starlette
+from starlette.responses import Response
+from starlette.routing import Route
+import uvicorn
+from telegram.ext import ApplicationBuilder, AIORateLimiter
+from telegram.request import HTTPXRequest
+
 # -------------------- Configuration --------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Render provides a PORT environment variable. Default to 10000 for local testing.
+PORT = int(os.environ.get("PORT", 10000))
+# The public URL of your Render app. You'll get this after creating the Web Service.
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # -------------------- Logging --------------------
 logging.basicConfig(
@@ -33,10 +46,10 @@ logger = logging.getLogger(__name__)
 
 # Validate tokens
 if not TELEGRAM_TOKEN:
-    logger.critical("❌ TELEGRAM_BOT_TOKEN missing. Check Render environment variables.")
+    logger.critical("❌ TELEGRAM_BOT_TOKEN missing.")
     sys.exit(1)
 if not GROQ_API_KEY:
-    logger.critical("❌ GROQ_API_KEY missing. Check Render environment variables.")
+    logger.critical("❌ GROQ_API_KEY missing.")
     sys.exit(1)
 
 AVAILABLE_MODELS = [
@@ -60,9 +73,9 @@ except Exception as e:
     sys.exit(1)
 
 # -------------------- In‑memory user store --------------------
-user_data = {}
+user_data: Dict[int, dict] = {}
 
-def get_user(uid: int):
+def get_user(uid: int) -> dict:
     if uid not in user_data:
         user_data[uid] = {
             "verified": False,
@@ -76,15 +89,15 @@ def model_keyboard():
         [InlineKeyboardButton(m, callback_data=f"model:{m}")] for m in AVAILABLE_MODELS
     ])
 
-# -------------------- Handlers --------------------
-async def enforce_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# -------------------- Handlers (unchanged logic) --------------------
+async def enforce_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if user["verified"]:
         return ConversationHandler.END
     await update.message.reply_text("🔐 Please enter the passcode:")
     return WAITING_PASSCODE
 
-async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if update.message.text.strip() == PASSCODE:
         user["verified"] = True
@@ -93,7 +106,7 @@ async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Incorrect. Try again:")
     return WAITING_PASSCODE
 
-async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     if not query.data or not query.data.startswith("model:"):
@@ -108,7 +121,7 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHATTING
 
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if not user["verified"]:
         await update.message.reply_text("🔐 Passcode first:")
@@ -116,7 +129,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Choose a model:", reply_markup=model_keyboard())
     return SELECTING_MODEL
 
-async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if not user["verified"] or not user["current_model"]:
         await update.message.reply_text("⚠️ Session error. /start again.")
@@ -146,7 +159,7 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ AI service error. Try again later.")
     return CHATTING
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if user["verified"] and user["current_model"]:
         await update.message.reply_text(
@@ -157,20 +170,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔐 Enter passcode:")
     return WAITING_PASSCODE
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Cancelled. /start to begin.")
     return ConversationHandler.END
 
-# -------------------- Main --------------------
-def main():
-    logger.info("🚀 Starting bot...")
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-    except Exception as e:
-        logger.critical(f"❌ PTB build failed: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+# -------------------- Webhook Setup --------------------
+async def health(_):
+    """Simple health check endpoint for Render."""
+    return Response("OK", status_code=200)
 
+async def webhook(request):
+    """Process incoming updates from Telegram."""
+    if request.method == "POST":
+        try:
+            # Get the application instance from app.state
+            ptb_app = request.app.state.ptb_app
+            # Decode the request body
+            body = await request.body()
+            # Let python-telegram-bot process the update
+            await ptb_app.update_queue.put(
+                Update.de_json(body.decode("utf-8"), ptb_app.bot)
+            )
+            return Response("OK", status_code=200)
+        except Exception as e:
+            logger.error(f"Error processing webhook: {e}")
+            return Response("Error", status_code=500)
+    return Response("Method not allowed", status_code=405)
+
+async def set_webhook(_):
+    """Set the webhook with Telegram (called on startup)."""
+    if not WEBHOOK_URL:
+        logger.warning("WEBHOOK_URL not set. Webhook will not be configured.")
+        return
+    try:
+        # We need a temporary application instance just to set the webhook
+        temp_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        await temp_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+        logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+        await temp_app.shutdown()
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+
+# -------------------- Main Application --------------------
+def main():
+    """Run the bot with a web server."""
+    # Create the PTB Application
+    ptb_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Add conversation handler
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -196,10 +243,40 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
-    app.add_handler(conv)
+    ptb_app.add_handler(conv)
 
-    logger.info("✅ Bot polling started.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Initialize the PTB application (this starts the background polling, but we'll disable it)
+    # Instead, we just want the bot to be ready to process updates from webhooks.
+    # We'll use initialize() and start() manually.
+    
+    # Create Starlette app for webhooks
+    starlette_app = Starlette(
+        routes=[
+            Route("/healthcheck", health, methods=["GET"]),
+            Route("/webhook", webhook, methods=["POST"]),
+        ],
+    )
+    # Attach the PTB app to the Starlette app's state
+    starlette_app.state.ptb_app = ptb_app
+
+    # Startup event to initialize PTB and set webhook
+    @starlette_app.on_event("startup")
+    async def startup():
+        logger.info("Initializing PTB application...")
+        await ptb_app.initialize()
+        await ptb_app.start()
+        # Set webhook after startup
+        await set_webhook(None)
+        logger.info("✅ Webhook bot started successfully.")
+
+    @starlette_app.on_event("shutdown")
+    async def shutdown():
+        logger.info("Shutting down PTB application...")
+        await ptb_app.stop()
+        await ptb_app.shutdown()
+
+    # Run the server
+    uvicorn.run(starlette_app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     try:
@@ -207,6 +284,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("🛑 Stopped by user.")
     except Exception as e:
-        logger.critical(f"❌ Fatal: {e}")
+        logger.critical(f"❌ Fatal error: {e}")
         traceback.print_exc()
         sys.exit(1)
