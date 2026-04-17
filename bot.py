@@ -1,6 +1,9 @@
 import os
+import sys
 import logging
-from typing import Dict, List, Optional
+import traceback
+import asyncio
+from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,8 +21,21 @@ from groq import Groq
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GROQ_API_KEY environment variables.")
+# -------------------- Logging (show everything) --------------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    stream=sys.stdout,   # Ensure logs go to Render's console
+)
+logger = logging.getLogger(__name__)
+
+# Validate tokens early
+if not TELEGRAM_TOKEN:
+    logger.critical("❌ TELEGRAM_BOT_TOKEN is not set in environment variables.")
+    sys.exit(1)
+if not GROQ_API_KEY:
+    logger.critical("❌ GROQ_API_KEY is not set in environment variables.")
+    sys.exit(1)
 
 AVAILABLE_MODELS = [
     "llama-3.1-8b-instant",
@@ -34,14 +50,13 @@ PASSCODE = "67stien67"
 # Conversation states
 WAITING_PASSCODE, SELECTING_MODEL, CHATTING = range(3)
 
-# -------------------- Logging --------------------
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
 # -------------------- Groq Client --------------------
-groq_client = Groq(api_key=GROQ_API_KEY)
+try:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    logger.info("✅ Groq client initialized.")
+except Exception as e:
+    logger.critical(f"❌ Failed to initialize Groq client: {e}")
+    sys.exit(1)
 
 # -------------------- User Data Storage (in‑memory) --------------------
 user_data: Dict[int, dict] = {}
@@ -62,20 +77,17 @@ def model_selection_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# -------------------- Handlers (unchanged logic) --------------------
 async def enforce_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     if user["verified"]:
         return ConversationHandler.END
-
-    await update.message.reply_text(
-        "🔐 You are not logged in. Please enter the passcode to continue:"
-    )
+    await update.message.reply_text("🔐 You are not logged in. Please enter the passcode to continue:")
     return WAITING_PASSCODE
 
 async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_input = update.message.text.strip()
     user = get_user(update.effective_user.id)
-
     if user_input == PASSCODE:
         user["verified"] = True
         await update.message.reply_text(
@@ -90,17 +102,13 @@ async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-
     if not query.data or not query.data.startswith("model:"):
         return SELECTING_MODEL
-
     model_name = query.data.split(":", 1)[1]
     user = get_user(update.effective_user.id)
-
     user["current_model"] = model_name
     if model_name not in user["histories"]:
         user["histories"][model_name] = []
-
     await query.edit_message_text(
         f"🤖 Model set to: `{model_name}`\n\n"
         f"You can now chat! Send me a message.\n"
@@ -114,7 +122,6 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not user["verified"]:
         await update.message.reply_text("🔐 Please enter the passcode first:")
         return WAITING_PASSCODE
-
     await update.message.reply_text(
         "Choose a new model:",
         reply_markup=model_selection_keyboard()
@@ -124,14 +131,12 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = get_user(update.effective_user.id)
     user_message = update.message.text
-
     if not user["verified"] or not user["current_model"]:
         await update.message.reply_text("⚠️ Session error. Please /start again.")
         return ConversationHandler.END
 
     model = user["current_model"]
     history = user["histories"][model]
-
     history.append({"role": "user", "content": user_message})
     if len(history) > 20:
         user["histories"][model] = history[-20:]
@@ -173,9 +178,20 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Operation cancelled. Send /start to begin again.")
     return ConversationHandler.END
 
+# -------------------- Main Application --------------------
 def main() -> None:
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    """Build and run the bot with comprehensive error logging."""
+    logger.info("🚀 Starting bot initialization...")
 
+    try:
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        logger.info("✅ PTB Application built.")
+    except Exception as e:
+        logger.critical(f"❌ Failed to build Application: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # Conversation handler setup
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -201,10 +217,24 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
-
     application.add_handler(conv_handler)
-    logger.info("Bot started. Press Ctrl+C to stop.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("✅ Handlers registered. Starting polling...")
+    try:
+        # This will block and run until interrupted
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.critical(f"❌ Bot crashed during polling: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    # Ensure we're in a proper asyncio environment
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        logger.critical(f"❌ Unhandled exception in main: {e}")
+        traceback.print_exc()
+        sys.exit(1)
