@@ -1,14 +1,20 @@
 import asyncio
 import requests
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
-# 🔑 HARD CODED
+# 🔑 HARD CODED CONFIG
 TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
 GROQ_API_KEY = "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"
-
 PASSCODE = "67stien67"
 
+# 🧠 MODELS
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -17,15 +23,12 @@ MODELS = [
     "qwen/qwen3-32b"
 ]
 
-# ---------------- MEMORY ----------------
+# ---------------- STATE ----------------
 logged_users = set()
-
 user_model = {}
+user_memory = {}
 
-# 👇 MEMORY STORAGE
-user_memory = {}  # {user_id: [messages]}
-
-MAX_MEMORY = 12  # keep last N messages
+MAX_MEMORY = 12
 
 
 def is_logged(user_id):
@@ -33,68 +36,84 @@ def is_logged(user_id):
 
 
 def trim_memory(user_id):
-    """Keep memory small so API doesn't explode tokens"""
-    if user_id not in user_memory:
-        return
-
-    if len(user_memory[user_id]) > MAX_MEMORY:
+    if user_id in user_memory and len(user_memory[user_id]) > MAX_MEMORY:
         user_memory[user_id] = user_memory[user_id][-MAX_MEMORY:]
 
 
-# ---------------- COMMANDS ----------------
-
+# ---------------- START MENU ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logged_users.discard(user_id)
 
+    keyboard = [
+        ["/login"],
+        ["/model"],
+        ["/help"]
+    ]
+
     await update.message.reply_text(
-        "🤖 AI Bot with Memory\n\n"
-        "🔐 Use /login and enter passcode.\n"
-        "🧠 Bot remembers your chat (session-based)."
+        "🤖 AI BOT MENU\n\n"
+        "1️⃣ /login - enter passcode\n"
+        "2️⃣ /model - choose AI model\n"
+        "3️⃣ chat normally after login\n\n"
+        "👇 Use buttons below:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 
+# ---------------- LOGIN ----------------
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 Send passcode:")
 
 
-async def models(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- MODEL MENU ----------------
+async def model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_logged(user_id):
-        return await update.message.reply_text("🔒 Login first")
+        return await update.message.reply_text("🔒 Login first using /login")
 
     await update.message.reply_text(
-        "Choose model:",
+        "🧠 Choose model:",
         reply_markup=ReplyKeyboardMarkup([[m] for m in MODELS], resize_keyboard=True)
     )
 
 
-# ---------------- CHAT HANDLER ----------------
+# ---------------- HELP ----------------
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "ℹ️ Commands:\n\n"
+        "/start - menu\n"
+        "/login - authenticate\n"
+        "/model - select AI model\n\n"
+        "After login, just chat normally."
+    )
 
+
+# ---------------- MESSAGE HANDLER ----------------
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # 🔒 LOGIN
+    # 🔒 LOGIN CHECK
     if not is_logged(user_id):
         if text == PASSCODE:
             logged_users.add(user_id)
             user_model[user_id] = MODELS[0]
-            user_memory[user_id] = []  # init memory
+            user_memory[user_id] = []
 
-            await update.message.reply_text("✅ Logged in + memory enabled")
+            await update.message.reply_text("✅ Logged in successfully!")
         else:
             await update.message.reply_text("❌ Wrong passcode")
         return
 
-    # 🔁 MODEL SWITCH
+    # 🧠 MODEL SWITCH
     if text in MODELS:
         user_model[user_id] = text
-        await update.message.reply_text(f"🧠 Model set: {text}")
+        await update.message.reply_text(f"🧠 Model set to:\n{text}")
         return
 
-    # 🧠 INIT MEMORY IF NEEDED
+    # 🧠 INIT MEMORY
     if user_id not in user_memory:
         user_memory[user_id] = []
 
@@ -121,41 +140,36 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = response.json()
 
         if "choices" not in data:
-            await update.message.reply_text(f"⚠️ API error:\n{data}")
+            await update.message.reply_text(f"⚠️ API Error:\n{data}")
             return
 
         reply = data["choices"][0]["message"]["content"]
 
-        # store bot reply
         user_memory[user_id].append({"role": "assistant", "content": reply})
         trim_memory(user_id)
 
         await update.message.reply_text(reply)
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Error: {e}")
+        await update.message.reply_text(f"⚠️ Error:\n{e}")
 
 
-# ---------------- MAIN ----------------
-
-import asyncio
-
+# ---------------- MAIN (RENDER SAFE) ----------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("models", models))
+    app.add_handler(CommandHandler("model", model))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("🚀 Bot running (Render-safe mode)...")
+    print("🚀 Bot running...")
 
     async def run():
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
-
-        # keep alive forever (Render-friendly)
         await asyncio.Event().wait()
 
     asyncio.run(run())
