@@ -5,8 +5,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ================= CONFIG =================
-TOKEN = "PASTE_YOUR_TELEGRAM_TOKEN"
-GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY"
+TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
+GROQ_API_KEY = "gsk_NhxYXTpFTv1gPxXixkNPWGdyb3FYUQLOFHQBTmvyK7TrVjqLcyO"
 PASSCODE = "67stien67"
 
 MODELS = [
