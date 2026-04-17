@@ -1,22 +1,13 @@
-import os
 import requests
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 🔑 GET TOKENS FROM RENDER ENV VARIABLES
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# 🔑 HARD CODED
+TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
+GROQ_API_KEY = "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"
 
-# 🔒 HARDCODED PASSCODE
 PASSCODE = "67stien67"
 
-# 🧠 MODELS
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -25,80 +16,91 @@ MODELS = [
     "qwen/qwen3-32b"
 ]
 
-# 🧾 SESSION STORAGE (RAM)
+# ---------------- MEMORY ----------------
 logged_users = set()
+
 user_model = {}
 
-# ------------------ AUTH ------------------
+# 👇 MEMORY STORAGE
+user_memory = {}  # {user_id: [messages]}
+
+MAX_MEMORY = 12  # keep last N messages
+
 
 def is_logged(user_id):
     return user_id in logged_users
 
-async def require_login(update: Update):
-    await update.message.reply_text("🔒 Enter passcode:")
 
-# ------------------ COMMANDS ------------------
+def trim_memory(user_id):
+    """Keep memory small so API doesn't explode tokens"""
+    if user_id not in user_memory:
+        return
+
+    if len(user_memory[user_id]) > MAX_MEMORY:
+        user_memory[user_id] = user_memory[user_id][-MAX_MEMORY:]
+
+
+# ---------------- COMMANDS ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    # Force logout every /start
-    if user_id in logged_users:
-        logged_users.remove(user_id)
-
-    keyboard = [
-        ["/login", "/models"]
-    ]
+    logged_users.discard(user_id)
 
     await update.message.reply_text(
-        "🤖 AI Communicator Bot\n\n"
-        "🔐 You must login first.\n"
-        "Use /login and enter passcode.\n\n"
-        "Commands:\n"
-        "/login - login\n"
-        "/models - choose AI model",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        "🤖 AI Bot with Memory\n\n"
+        "🔐 Use /login and enter passcode.\n"
+        "🧠 Bot remembers your chat (session-based)."
     )
+
 
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 Send passcode:")
+
 
 async def models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_logged(user_id):
-        return await require_login(update)
-
-    keyboard = [[m] for m in MODELS]
+        return await update.message.reply_text("🔒 Login first")
 
     await update.message.reply_text(
-        "🧠 Choose a model:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        "Choose model:",
+        reply_markup=ReplyKeyboardMarkup([[m] for m in MODELS], resize_keyboard=True)
     )
 
-# ------------------ MESSAGE HANDLER ------------------
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- CHAT HANDLER ----------------
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # 🔒 LOGIN CHECK EVERY TIME
+    # 🔒 LOGIN
     if not is_logged(user_id):
         if text == PASSCODE:
             logged_users.add(user_id)
             user_model[user_id] = MODELS[0]
-            await update.message.reply_text("✅ Logged in! You can now chat.")
+            user_memory[user_id] = []  # init memory
+
+            await update.message.reply_text("✅ Logged in + memory enabled")
         else:
-            await update.message.reply_text("❌ Wrong passcode. Try again.")
+            await update.message.reply_text("❌ Wrong passcode")
         return
 
     # 🔁 MODEL SWITCH
     if text in MODELS:
         user_model[user_id] = text
-        await update.message.reply_text(f"✅ Model switched to:\n{text}")
+        await update.message.reply_text(f"🧠 Model set: {text}")
         return
 
-    # 🤖 CHAT WITH GROQ
+    # 🧠 INIT MEMORY IF NEEDED
+    if user_id not in user_memory:
+        user_memory[user_id] = []
+
+    # store user message
+    user_memory[user_id].append({"role": "user", "content": text})
+    trim_memory(user_id)
+
     model = user_model.get(user_id, MODELS[0])
 
     try:
@@ -110,9 +112,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             json={
                 "model": model,
-                "messages": [
-                    {"role": "user", "content": text}
-                ]
+                "messages": user_memory[user_id]
             },
             timeout=30
         )
@@ -125,12 +125,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = data["choices"][0]["message"]["content"]
 
+        # store bot reply
+        user_memory[user_id].append({"role": "assistant", "content": reply})
+        trim_memory(user_id)
+
         await update.message.reply_text(reply)
 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {e}")
 
-# ------------------ MAIN ------------------
+
+# ---------------- MAIN ----------------
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -138,10 +143,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("login", login))
     app.add_handler(CommandHandler("models", models))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("🚀 Bot is running...")
+    print("🚀 Bot running with memory...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
