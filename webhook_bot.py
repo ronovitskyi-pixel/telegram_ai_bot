@@ -10,7 +10,6 @@ from telegram.ext import (
 # ================= CONFIG & DIAGNOSTICS =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "").strip()
 
 if not TOKEN:
@@ -19,15 +18,15 @@ if not TOKEN:
 
 # ================= MODEL DICTIONARY =================
 MODEL_CONFIGS = {
+    # Groq Models (Ultra-fast, permanent free tier)
     "llama-3.3-70b-versatile": {"provider": "groq"},
     "llama-3.1-8b-instant": {"provider": "groq"},
     "mixtral-8x7b-32768": {"provider": "groq"},
     "gemma2-9b-it": {"provider": "groq"},
-    "deepseek-chat": {"provider": "deepseek"},
-    "deepseek-reasoner": {"provider": "deepseek"},
+    
+    # Z.AI Models (The 100% Free Tier models)
     "glm-4-flash": {"provider": "zai"},
-    "glm-4-flashx": {"provider": "zai"},
-    "glm-4-plus": {"provider": "zai"}
+    "glm-4-flashx": {"provider": "zai"}
 }
 
 MODELS = list(MODEL_CONFIGS.keys())
@@ -35,7 +34,6 @@ MODELS = list(MODEL_CONFIGS.keys())
 # Group the models for the UI Categories
 PROVIDER_GROUPS = {
     "🟢 Groq Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "groq"],
-    "🔵 DeepSeek Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "deepseek"],
     "🟣 Z.ai Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "zai"],
 }
 
@@ -52,26 +50,22 @@ def main_keyboard():
     )
 
 def category_keyboard():
-    # Shows the 3 providers
+    # DeepSeek removed from the menu
     return ReplyKeyboardMarkup(
         [
-            ["🟢 Groq Models", "🔵 DeepSeek Models"],
-            ["🟣 Z.ai Models"],
+            ["🟢 Groq Models", "🟣 Z.ai Models"],
             ["🔙 Back to Chat"]
         ],
         resize_keyboard=True
     )
 
 def provider_keyboard(category_name):
-    # Shows the specific models for the chosen provider
     models = PROVIDER_GROUPS.get(category_name, [])
     keyboard = []
     
-    # Put 2 models per row
     for i in range(0, len(models), 2):
         keyboard.append(models[i:i+2])
         
-    # The back button to return to the categories list
     keyboard.append(["🔙 Back to Categories"])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -79,8 +73,7 @@ def provider_keyboard(category_name):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **Welcome!**\n\n"
-        "I am now powered by Groq, DeepSeek, AND Z.AI! 🚀\n"
-        "Use the buttons below to switch between different models."
+        "Use the buttons below to switch models or clear your chat memory."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard())
 
@@ -95,22 +88,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 Memory cleared! What's next?", reply_markup=main_keyboard())
         return
 
-    # Go to Categories
     if text == "🧠 Change Model" or text == "🔙 Back to Categories":
         await update.message.reply_text("📂 Choose an AI Provider:", reply_markup=category_keyboard())
         return
 
-    # Back to Chat
     if text == "🔙 Back to Chat":
         await update.message.reply_text("Cancelled. Back to chatting!", reply_markup=main_keyboard())
         return
 
-    # Go to specific Provider's Models
     if text in PROVIDER_GROUPS:
         await update.message.reply_text(f"👇 Select a model from {text}:", reply_markup=provider_keyboard(text))
         return
 
-    # Select a Model
     if text in MODELS:
         user_model[uid] = text
         await update.message.reply_text(f"✅ Model set to:\n**{text}**\n\nSay hello!", parse_mode="Markdown", reply_markup=main_keyboard())
@@ -129,9 +118,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if provider == "groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
         api_key = GROQ_API_KEY
-    elif provider == "deepseek":
-        url = "https://api.deepseek.com/chat/completions"
-        api_key = DEEPSEEK_API_KEY
     elif provider == "zai":
         url = "https://api.z.ai/api/paas/v4/chat/completions"
         api_key = ZAI_API_KEY
@@ -159,8 +145,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"⚠️ API Error ({r.status_code}): {r.text}"
         else:
             reply = r.json()["choices"][0]["message"]["content"]
-            if not reply: 
-                reply = "*(Thinking complete, but returned no text)*"
 
     except Exception as e:
         reply = f"⚠️ Network Error: {e}"
@@ -173,7 +157,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
 
-    print(f"🚀 Multi-API Bot starting on port {port}...", flush=True)
+    print(f"🚀 Bot starting on port {port}...", flush=True)
     
     try:
         loop = asyncio.new_event_loop()
