@@ -1,6 +1,7 @@
 import os
+import sys
 import requests
-import asyncio # <--- ADD THIS IMPORT
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,9 +12,25 @@ from telegram.ext import (
     filters
 )
 
-# ================= CONFIG =================
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "PUT_NEW_TOKEN_HERE_IF_TESTING_LOCALLY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PUT_NEW_KEY_HERE_IF_TESTING_LOCALLY")
+# ================= CONFIG & DIAGNOSTICS =================
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+
+# 🚨 Self-Diagnostic Check 🚨
+if not TOKEN or TOKEN == "YOUR_ACTUAL_TELEGRAM_TOKEN":
+    print("\n" + "!"*50)
+    print("🚨 CRITICAL ERROR: TELEGRAM_TOKEN IS MISSING OR INVALID! 🚨")
+    print("Make sure you added it exactly as 'TELEGRAM_TOKEN' in Render Environment Variables.")
+    print("!"*50 + "\n", flush=True)
+    sys.exit(1)
+
+if not GROQ_API_KEY or GROQ_API_KEY == "YOUR_ACTUAL_GROQ_API_KEY":
+    print("\n" + "!"*50)
+    print("🚨 CRITICAL ERROR: GROQ_API_KEY IS MISSING OR INVALID! 🚨")
+    print("Make sure you added it exactly as 'GROQ_API_KEY' in Render Environment Variables.")
+    print("!"*50 + "\n", flush=True)
+    sys.exit(1)
+
 PASSCODE = "67stien67"
 
 MODELS = [
@@ -27,9 +44,6 @@ MODELS = [
 logged_users = set()
 user_model = {}
 user_memory = {}
-
-# ================= APP =================
-tg_app = Application.builder().token(TOKEN).build()
 
 # ================= UI =================
 def main_menu():
@@ -122,26 +136,35 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_memory[uid].append({"role": "assistant", "content": reply})
     await update.message.reply_text(reply)
 
-# ================= REGISTER =================
-tg_app.add_handler(CommandHandler("start", start))
-tg_app.add_handler(CallbackQueryHandler(callback))
-tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
 # ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", f"https://telegram-ai-bot-3370.onrender.com")
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
 
-    print(f"🚀 Bot starting on port {port}...")
-    print(f"🔗 Webhook URL: {RENDER_URL}/webhook")
+    print(f"🚀 Bot starting on port {port}...", flush=True)
+    print(f"🔗 Webhook URL: {RENDER_URL}/webhook", flush=True)
     
-    # 🚨 FIX: Explicitly create and set the event loop for the newer Python version
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    tg_app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path="webhook",
-        webhook_url=f"{RENDER_URL}/webhook"
-    )
+    try:
+        # Explicitly create and set the event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Initialize application
+        tg_app = Application.builder().token(TOKEN).build()
+        
+        # Register handlers
+        tg_app.add_handler(CommandHandler("start", start))
+        tg_app.add_handler(CallbackQueryHandler(callback))
+        tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+        
+        # Run Webhook
+        tg_app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=f"{RENDER_URL}/webhook"
+        )
+    except Exception as e:
+        print("\n" + "!"*50)
+        print(f"🚨 FATAL ERROR STARTING BOT: {e} 🚨")
+        print("!"*50 + "\n", flush=True)
