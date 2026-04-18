@@ -2,11 +2,10 @@ import os
 import sys
 import requests
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
     filters
@@ -24,7 +23,6 @@ if not GROQ_API_KEY or GROQ_API_KEY == "YOUR_ACTUAL_GROQ_API_KEY":
     print("\n" + "!"*50 + "\n🚨 MISSING GROQ_API_KEY! 🚨\n" + "!"*50 + "\n", flush=True)
     sys.exit(1)
 
-# Exactly the models you requested
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -37,68 +35,73 @@ MODELS = [
 user_model = {}
 user_memory = {}
 
-# ================= UI & MENU =================
-async def post_init(application: Application):
-    # This creates the menu inside the "typing bar thing"!
-    await application.bot.set_my_commands([
-        BotCommand("start", "Start the bot"),
-        BotCommand("model", "Change the AI model"),
-        BotCommand("clear", "Clear the bot's memory")
-    ])
-
-def model_menu():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(m, callback_data=f"model:{m}")] for m in MODELS]
+# ================= KEYBOARDS (THE TYPING MENU) =================
+def main_keyboard():
+    # The buttons that sit at the bottom of the screen normally
+    return ReplyKeyboardMarkup(
+        [["🧠 Change Model", "🧹 Clear Memory"]],
+        resize_keyboard=True,
+        is_persistent=True
     )
+
+def model_keyboard():
+    # Creates a neat grid of buttons for the models
+    keyboard = []
+    # Put 2 models per row so it looks nice on a phone screen
+    for i in range(0, len(MODELS), 2):
+        keyboard.append(MODELS[i:i+2])
+    # Add a back button at the bottom
+    keyboard.append(["🔙 Back to Chat"])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "👋 **Welcome!** I am fully open and ready to chat.\n\n"
-        "• I will remember our conversation.\n"
-        "• Use /model to switch my brain.\n"
-        "• Use /clear to wipe my memory if we change topics."
+        "👋 **Welcome back!**\n\n"
+        "Check out your new menu at the bottom of the screen! 👇\n"
+        "Use the buttons to change your AI model or wipe my memory."
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    # Send the main keyboard when they type /start
+    await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard())
 
-async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧠 Choose your model:", reply_markup=model_menu())
-
-async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    user_memory[uid] = []
-    await update.message.reply_text("🧹 Memory completely cleared! What's next?")
-
-# ================= CALLBACK (BUTTONS) =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-
-    if q.data.startswith("model:"):
-        model = q.data.split(":", 1)[1]
-        user_model[uid] = model
-        await q.edit_message_text(f"✅ Model successfully set to:\n**{model}**", parse_mode="Markdown")
-
-# ================= CHAT (AI LOGIC) =================
+# ================= CHAT & MENU LOGIC =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
 
-    # 1. Setup memory for new users
+    # --- MENU BUTTON INTERCEPTORS ---
+    # If they press a menu button, we handle it here and stop the AI from replying to it.
+
+    if text == "🧹 Clear Memory":
+        user_memory[uid] = []
+        await update.message.reply_text("🧹 Memory completely cleared! Ready for a new topic.", reply_markup=main_keyboard())
+        return
+
+    if text == "🧠 Change Model":
+        await update.message.reply_text("🧠 Choose your new brain from the keyboard below:", reply_markup=model_keyboard())
+        return
+
+    if text == "🔙 Back to Chat":
+        await update.message.reply_text("Cancelled. Back to chatting!", reply_markup=main_keyboard())
+        return
+
+    if text in MODELS:
+        user_model[uid] = text
+        await update.message.reply_text(f"✅ Model successfully set to:\n**{text}**\n\nSay hello!", parse_mode="Markdown", reply_markup=main_keyboard())
+        return
+
+    # --- AI CHAT LOGIC ---
+    # If the text wasn't a menu button, treat it as a normal message for the AI.
+
     if uid not in user_memory:
         user_memory[uid] = []
 
-    # 2. Add user message to memory
     user_memory[uid].append({"role": "user", "content": text})
-    
-    # Keep only the last 10 messages so the bot doesn't crash from memory overload
     user_memory[uid] = user_memory[uid][-10:]
 
-    # 3. Get the user's chosen model (default to the first one)
     model = user_model.get(uid, MODELS[0])
 
-    # 4. Talk to the API
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -114,17 +117,15 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if r.status_code != 200:
-            reply = f"⚠️ API Error: {r.status_code}\n(If this says 'Model not found', Groq doesn't support this specific model name!)"
+            reply = f"⚠️ API Error: {r.status_code}\n(If this says 'Model not found', Groq doesn't host this specific model!)"
         else:
             reply = r.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
         reply = f"⚠️ Network Error: {e}"
 
-    # 5. Add bot's reply to memory so it remembers its own answers!
     user_memory[uid].append({"role": "assistant", "content": reply})
-    
-    await update.message.reply_text(reply)
+    await update.message.reply_text(reply, reply_markup=main_keyboard())
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -137,17 +138,9 @@ if __name__ == "__main__":
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # We add post_init here to push the commands to the Telegram menu
-        tg_app = Application.builder().token(TOKEN).post_init(post_init).build()
+        tg_app = Application.builder().token(TOKEN).build()
         
-        # Register commands so the AI doesn't "eat" them
         tg_app.add_handler(CommandHandler("start", start))
-        tg_app.add_handler(CommandHandler("model", cmd_model))
-        tg_app.add_handler(CommandHandler("clear", cmd_clear))
-        
-        tg_app.add_handler(CallbackQueryHandler(callback))
-        
-        # ~filters.COMMAND makes sure it ignores things starting with "/"
         tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
         
         tg_app.run_webhook(
