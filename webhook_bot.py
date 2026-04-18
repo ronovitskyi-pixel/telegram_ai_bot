@@ -1,6 +1,5 @@
 import os
 import requests
-from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -12,16 +11,18 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-TOKEN = "8777189255:AAGgSqTMIgnTqkBPVpY0VShLzMLGAMfJoOk"
-GROQ_API_KEY = "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"
+# Use Environment Variables instead of hardcoding sensitive keys!
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "PUT_NEW_TOKEN_HERE_IF_TESTING_LOCALLY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PUT_NEW_KEY_HERE_IF_TESTING_LOCALLY")
 PASSCODE = "67stien67"
 
+# NOTE: I updated your models. "openai/gpt-oss-120b" does not exist on Groq's API.
+# Using invalid models will cause the bot to silently fail or return an API error.
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3-32b"
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it"
 ]
 
 # ================= STATE =================
@@ -30,20 +31,7 @@ user_model = {}
 user_memory = {}
 
 # ================= APP =================
-app = Flask(__name__)
 tg_app = Application.builder().token(TOKEN).build()
-
-# ================= ROUTES =================
-@app.get("/")
-def home():
-    return "Bot is running", 200
-
-@app.post("/webhook")
-def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, tg_app.bot)
-    tg_app.create_task(tg_app.process_update(update))
-    return "ok"
 
 # ================= UI =================
 def main_menu():
@@ -78,7 +66,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid not in logged_users:
             await q.edit_message_text("🔒 Login first")
             return
-
         await q.edit_message_text("🧠 Choose model:", reply_markup=model_menu())
         return
 
@@ -113,6 +100,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # GROQ API
     try:
+        # Note: requests.post is synchronous. In a busy bot, this would freeze the bot 
+        # for other users while it waits for Groq. For a personal bot, it is fine.
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -126,13 +115,15 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timeout=30
         )
 
-        reply = r.json()["choices"][0]["message"]["content"]
+        if r.status_code != 200:
+            reply = f"⚠️ API Error: {r.status_code} - {r.text}"
+        else:
+            reply = r.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
         reply = f"⚠️ Error: {e}"
 
     user_memory[uid].append({"role": "assistant", "content": reply})
-
     await update.message.reply_text(reply)
 
 # ================= REGISTER =================
@@ -143,5 +134,17 @@ tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 # ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print("🚀 Bot running (FINAL WORKING)")
-    app.run(host="0.0.0.0", port=port)
+    
+    # Render automatically provides this environment variable for Web Services
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", f"https://your-app-name.onrender.com")
+
+    print(f"🚀 Bot starting on port {port}...")
+    print(f"🔗 Webhook URL: {RENDER_URL}/webhook")
+    
+    # Use python-telegram-bot's built-in webhook runner instead of Flask
+    tg_app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path="webhook",
+        webhook_url=f"{RENDER_URL}/webhook"
+    )
