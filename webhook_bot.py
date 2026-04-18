@@ -12,8 +12,8 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 # Use Environment Variables instead of hardcoding sensitive keys!
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "PUT_NEW_TOKEN_HERE_IF_TESTING_LOCALLY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PUT_NEW_KEY_HERE_IF_TESTING_LOCALLY")
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 PASSCODE = "67stien67"
 
 # NOTE: I updated your models. "openai/gpt-oss-120b" does not exist on Groq's API.
