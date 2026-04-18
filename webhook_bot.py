@@ -2,124 +2,165 @@ import os
 import sys
 import requests
 import asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    Application, CommandHandler, MessageHandler, ContextTypes, filters
 )
 
 # ================= CONFIG & DIAGNOSTICS =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "").strip()
 
-if not TOKEN or TOKEN == "YOUR_ACTUAL_TELEGRAM_TOKEN":
-    print("\n" + "!"*50 + "\n🚨 MISSING TELEGRAM_TOKEN! 🚨\n" + "!"*50 + "\n", flush=True)
+if not TOKEN:
+    print("\n🚨 MISSING TELEGRAM_TOKEN! 🚨\n", flush=True)
     sys.exit(1)
 
-if not GROQ_API_KEY or GROQ_API_KEY == "YOUR_ACTUAL_GROQ_API_KEY":
-    print("\n" + "!"*50 + "\n🚨 MISSING GROQ_API_KEY! 🚨\n" + "!"*50 + "\n", flush=True)
-    sys.exit(1)
+# ================= MODEL DICTIONARY =================
+MODEL_CONFIGS = {
+    "llama-3.3-70b-versatile": {"provider": "groq"},
+    "llama-3.1-8b-instant": {"provider": "groq"},
+    "mixtral-8x7b-32768": {"provider": "groq"},
+    "gemma2-9b-it": {"provider": "groq"},
+    "deepseek-chat": {"provider": "deepseek"},
+    "deepseek-reasoner": {"provider": "deepseek"},
+    "glm-4-flash": {"provider": "zai"},
+    "glm-4-flashx": {"provider": "zai"},
+    "glm-4-plus": {"provider": "zai"}
+}
 
-MODELS = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3-32b"
-]
+MODELS = list(MODEL_CONFIGS.keys())
+
+# Group the models for the UI Categories
+PROVIDER_GROUPS = {
+    "🟢 Groq Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "groq"],
+    "🔵 DeepSeek Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "deepseek"],
+    "🟣 Z.ai Models": [m for m, c in MODEL_CONFIGS.items() if c["provider"] == "zai"],
+}
 
 # ================= STATE (MEMORY) =================
 user_model = {}
 user_memory = {}
 
-# ================= KEYBOARDS (THE TYPING MENU) =================
+# ================= KEYBOARDS =================
 def main_keyboard():
-    # The buttons that sit at the bottom of the screen normally
     return ReplyKeyboardMarkup(
         [["🧠 Change Model", "🧹 Clear Memory"]],
         resize_keyboard=True,
         is_persistent=True
     )
 
-def model_keyboard():
-    # Creates a neat grid of buttons for the models
+def category_keyboard():
+    # Shows the 3 providers
+    return ReplyKeyboardMarkup(
+        [
+            ["🟢 Groq Models", "🔵 DeepSeek Models"],
+            ["🟣 Z.ai Models"],
+            ["🔙 Back to Chat"]
+        ],
+        resize_keyboard=True
+    )
+
+def provider_keyboard(category_name):
+    # Shows the specific models for the chosen provider
+    models = PROVIDER_GROUPS.get(category_name, [])
     keyboard = []
-    # Put 2 models per row so it looks nice on a phone screen
-    for i in range(0, len(MODELS), 2):
-        keyboard.append(MODELS[i:i+2])
-    # Add a back button at the bottom
-    keyboard.append(["🔙 Back to Chat"])
     
+    # Put 2 models per row
+    for i in range(0, len(models), 2):
+        keyboard.append(models[i:i+2])
+        
+    # The back button to return to the categories list
+    keyboard.append(["🔙 Back to Categories"])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "👋 **Welcome back!**\n\n"
-        "Check out your new menu at the bottom of the screen! 👇\n"
-        "Use the buttons to change your AI model or wipe my memory."
+        "👋 **Welcome!**\n\n"
+        "I am now powered by Groq, DeepSeek, AND Z.AI! 🚀\n"
+        "Use the buttons below to switch between different models."
     )
-    # Send the main keyboard when they type /start
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard())
 
-# ================= CHAT & MENU LOGIC =================
+# ================= CHAT & MULTI-API LOGIC =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
 
-    # --- MENU BUTTON INTERCEPTORS ---
-    # If they press a menu button, we handle it here and stop the AI from replying to it.
-
+    # --- MENU INTERCEPTORS ---
     if text == "🧹 Clear Memory":
         user_memory[uid] = []
-        await update.message.reply_text("🧹 Memory completely cleared! Ready for a new topic.", reply_markup=main_keyboard())
+        await update.message.reply_text("🧹 Memory cleared! What's next?", reply_markup=main_keyboard())
         return
 
-    if text == "🧠 Change Model":
-        await update.message.reply_text("🧠 Choose your new brain from the keyboard below:", reply_markup=model_keyboard())
+    # Go to Categories
+    if text == "🧠 Change Model" or text == "🔙 Back to Categories":
+        await update.message.reply_text("📂 Choose an AI Provider:", reply_markup=category_keyboard())
         return
 
+    # Back to Chat
     if text == "🔙 Back to Chat":
         await update.message.reply_text("Cancelled. Back to chatting!", reply_markup=main_keyboard())
         return
 
+    # Go to specific Provider's Models
+    if text in PROVIDER_GROUPS:
+        await update.message.reply_text(f"👇 Select a model from {text}:", reply_markup=provider_keyboard(text))
+        return
+
+    # Select a Model
     if text in MODELS:
         user_model[uid] = text
-        await update.message.reply_text(f"✅ Model successfully set to:\n**{text}**\n\nSay hello!", parse_mode="Markdown", reply_markup=main_keyboard())
+        await update.message.reply_text(f"✅ Model set to:\n**{text}**\n\nSay hello!", parse_mode="Markdown", reply_markup=main_keyboard())
         return
 
     # --- AI CHAT LOGIC ---
-    # If the text wasn't a menu button, treat it as a normal message for the AI.
-
     if uid not in user_memory:
         user_memory[uid] = []
 
     user_memory[uid].append({"role": "user", "content": text})
     user_memory[uid] = user_memory[uid][-10:]
 
-    model = user_model.get(uid, MODELS[0])
+    model_name = user_model.get(uid, MODELS[0])
+    provider = MODEL_CONFIGS[model_name]["provider"]
+
+    if provider == "groq":
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        api_key = GROQ_API_KEY
+    elif provider == "deepseek":
+        url = "https://api.deepseek.com/chat/completions"
+        api_key = DEEPSEEK_API_KEY
+    elif provider == "zai":
+        url = "https://api.z.ai/api/paas/v4/chat/completions"
+        api_key = ZAI_API_KEY
+
+    if not api_key:
+        await update.message.reply_text(f"⚠️ You need to add {provider.upper()}_API_KEY to your Render Environment Variables to use this model!", reply_markup=main_keyboard())
+        user_memory[uid].pop() 
+        return
 
     try:
         r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            url,
             headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             },
             json={
-                "model": model,
+                "model": model_name,
                 "messages": user_memory[uid]
             },
             timeout=30
         )
 
         if r.status_code != 200:
-            reply = f"⚠️ API Error: {r.status_code}\n(If this says 'Model not found', Groq doesn't host this specific model!)"
+            reply = f"⚠️ API Error ({r.status_code}): {r.text}"
         else:
             reply = r.json()["choices"][0]["message"]["content"]
+            if not reply: 
+                reply = "*(Thinking complete, but returned no text)*"
 
     except Exception as e:
         reply = f"⚠️ Network Error: {e}"
@@ -132,7 +173,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
 
-    print(f"🚀 Bot starting on port {port}...", flush=True)
+    print(f"🚀 Multi-API Bot starting on port {port}...", flush=True)
     
     try:
         loop = asyncio.new_event_loop()
