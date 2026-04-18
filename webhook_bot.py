@@ -1,5 +1,6 @@
 import os
 import requests
+import asyncio # <--- ADD THIS IMPORT
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,13 +12,10 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-# Use Environment Variables instead of hardcoding sensitive keys!
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "PUT_NEW_TOKEN_HERE_IF_TESTING_LOCALLY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PUT_NEW_KEY_HERE_IF_TESTING_LOCALLY")
 PASSCODE = "67stien67"
 
-# NOTE: I updated your models. "openai/gpt-oss-120b" does not exist on Groq's API.
-# Using invalid models will cause the bot to silently fail or return an API error.
 MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -100,8 +98,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # GROQ API
     try:
-        # Note: requests.post is synchronous. In a busy bot, this would freeze the bot 
-        # for other users while it waits for Groq. For a personal bot, it is fine.
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -134,14 +130,15 @@ tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 # ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    
-    # Render automatically provides this environment variable for Web Services
-    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", f"https://your-app-name.onrender.com")
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", f"https://telegram-ai-bot-3370.onrender.com")
 
     print(f"🚀 Bot starting on port {port}...")
     print(f"🔗 Webhook URL: {RENDER_URL}/webhook")
     
-    # Use python-telegram-bot's built-in webhook runner instead of Flask
+    # 🚨 FIX: Explicitly create and set the event loop for the newer Python version
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     tg_app.run_webhook(
         listen="0.0.0.0",
         port=port,
