@@ -50,7 +50,6 @@ def main_keyboard():
     )
 
 def category_keyboard():
-    # DeepSeek removed from the menu
     return ReplyKeyboardMarkup(
         [
             ["🟢 Groq Models", "🟣 Z.ai Models"],
@@ -119,7 +118,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = "https://api.groq.com/openai/v1/chat/completions"
         api_key = GROQ_API_KEY
     elif provider == "zai":
-        url = "https://api.z.ai/api/paas/v4/chat/completions"
+        # Fixed: Pointing to the main platform where the free tier actually lives!
+        url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
         api_key = ZAI_API_KEY
 
     if not api_key:
